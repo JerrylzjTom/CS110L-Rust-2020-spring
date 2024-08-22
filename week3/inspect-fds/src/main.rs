@@ -14,7 +14,17 @@ fn main() {
     let target = &args[1];
 
     // TODO: Milestone 1: Get the target Process using psutils::get_target()
-    unimplemented!();
+    let target_process = ps_utils::get_target(target).expect("There not being any matching process");
+    if target_process.is_none() {
+        println!("No matching process found");
+        std::process::exit(1);
+    }else {
+        target_process.clone().unwrap().print();
+        let child_process = ps_utils::get_child_processes(target_process.unwrap().pid).unwrap();
+        for child in child_process {
+            child.print();
+        }
+    }
 }
 
 #[cfg(test)]
