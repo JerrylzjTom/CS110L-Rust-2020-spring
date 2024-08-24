@@ -1,7 +1,5 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::{self, Inferior};
-use nix::sys::ptrace;
-use nix::sys::wait::waitpid;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -34,6 +32,14 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    if self.inferior.is_some() {
+                        if let Some(inferior) = self.inferior.as_mut() {
+                            // If there is already a running process, kill it
+                            inferior.kill().expect("Failed to kill inferior");
+                            println!("Killing running inferior (pid {})", inferior.pid());
+                            self.inferior = None;
+                        }
+                    }
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
@@ -41,12 +47,23 @@ impl Debugger {
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
                         let inferior = self.inferior.as_mut().unwrap();
-                        ptrace::cont(inferior.pid(), None).ok().expect("Error running inferior");
-                        let status = inferior.wait(None).ok();
+                        
+                        let status = inferior.cont().ok();
                         if status.is_none() {
                             println!("Error running inferior");
                         }else {
-                            print!("Child exited (status 0)");
+                            match status.unwrap() {
+                                inferior::Status::Exited(exit_code) => {
+                                    println!("Child exited (status {})", exit_code);
+                                    self.inferior = None;
+                                }
+                                inferior::Status::Signaled(signal) => {
+                                    println!("Child signaled (signal {})", signal.to_string());
+                                }
+                               inferior::Status::Stopped(signal, address) => {
+                                    println!("Child stopped (signal {}) at address {}", signal.to_string(), address);
+                               }
+                            }
                         }
                     }
                     else {
@@ -54,7 +71,38 @@ impl Debugger {
                     }
                 }
                 DebuggerCommand::Quit => {
+                    if self.inferior.is_some() {
+                        if let Some(inferior) = self.inferior.as_mut() {
+                            // If there is already a running process, kill it
+                            inferior.kill().expect("Failed to kill inferior");
+                            println!("Killing running inferior (pid {})", inferior.pid());
+                            self.inferior = None;
+                        }
+                    }
                     return;
+                }
+                DebuggerCommand::Continue => {
+                    if let Some(inferior) = self.inferior.as_mut() {
+                        // TODO (milestone 2): Implement the continue command
+                        // You may use self.inferior.as_mut().unwrap() to get a mutable reference
+                        // to the Inferior object
+                        let status = inferior.cont().ok();
+                        if status.is_none() {
+                            println!("No process running");
+                        }else {
+                            match status.unwrap() {
+                                inferior::Status::Exited(exit_code) => {
+                                    println!("Child exited (status {})", exit_code);
+                                }
+                                inferior::Status::Signaled(signal) => {
+                                    println!("Child signaled (signal {})", signal.to_string());
+                                }
+                               inferior::Status::Stopped(signal, address) => {
+                                    println!("Child stopped (signal {}) at address {}", signal.to_string(), address);
+                               }
+                            }
+                        }
+                    }
                 }
             }
         }
