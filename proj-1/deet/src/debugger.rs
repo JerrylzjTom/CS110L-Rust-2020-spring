@@ -2,18 +2,31 @@ use crate::debugger_command::DebuggerCommand;
 use crate::inferior::{self, Inferior};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 
 pub struct Debugger {
     target: String,
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    dwarf_data: DwarfData,
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
         // TODO (milestone 3): initialize the DwarfData
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!("Could not debugging symbols from {}: {:?}", target, err);
+                std::process::exit(1);
+            }
+        };
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -25,6 +38,7 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            dwarf_data: debug_data,
         }
     }
 
@@ -61,7 +75,9 @@ impl Debugger {
                                     println!("Child signaled (signal {})", signal.to_string());
                                 }
                                inferior::Status::Stopped(signal, address) => {
-                                    println!("Child stopped (signal {}) at address {}", signal.to_string(), address);
+                                    let line_num = self.dwarf_data.get_line_from_addr(address).unwrap();
+                                    println!("Child stopped (signal {})", signal.to_string());
+                                    println!("Stopped at {}", line_num);
                                }
                             }
                         }
@@ -104,7 +120,13 @@ impl Debugger {
                         }
                     }
                 }
+                DebuggerCommand::Backtrace => {
+                    if let Some(inferior) = self.inferior.as_mut() {
+                        inferior.print_backtrace(&self.dwarf_data).expect("Could not print backtrace");
+                    }
+                }
             }
+
         }
     }
 
