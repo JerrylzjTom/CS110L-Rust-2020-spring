@@ -1,5 +1,6 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::{self, Inferior};
+use addr2line::gimli::CompilationUnitHeadersIter;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use crate::dwarf_data::{DwarfData, Error as DwarfError};
@@ -10,6 +11,7 @@ pub struct Debugger {
     readline: Editor<()>,
     inferior: Option<Inferior>,
     dwarf_data: DwarfData,
+    breakpoints: Vec<usize>,
 }
 
 impl Debugger {
@@ -27,6 +29,8 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
+        // println!("{:?}", debug_data);
+        debug_data.print();
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -39,7 +43,10 @@ impl Debugger {
             readline,
             inferior: None,
             dwarf_data: debug_data,
+            breakpoints: vec![],
         }
+
+
     }
 
     pub fn run(&mut self) {
@@ -54,7 +61,7 @@ impl Debugger {
                             self.inferior = None;
                         }
                     }
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // TODO (milestone 1): make the inferior run
@@ -115,6 +122,12 @@ impl Debugger {
                                 }
                                inferior::Status::Stopped(signal, address) => {
                                     println!("Child stopped (signal {}) at address {}", signal.to_string(), address);
+                                    if let Some(line_num) = self.dwarf_data.get_line_from_addr(address) {
+                                        println!("Stopped at {}",line_num);
+                                    }
+                                    if inferior.breakpoints.contains_key(&address) {
+                                        inferior.continue_breakpoint(&address).ok();
+                                    }
                                }
                             }
                         }
@@ -123,6 +136,21 @@ impl Debugger {
                 DebuggerCommand::Backtrace => {
                     if let Some(inferior) = self.inferior.as_mut() {
                         inferior.print_backtrace(&self.dwarf_data).expect("Could not print backtrace");
+                    }
+                }
+                DebuggerCommand::BreakPoint(args) => {
+                        // Check if the string starts with an asterisk
+                    if args.starts_with('*') {
+                        // Extract the substring after the asterisk
+                        let address_str = &args[1..];
+                        let address = Self::parse_address(address_str);
+                        if address.is_some() {
+                            let address = address.unwrap();
+                            self.breakpoints.push(address);
+                            println!("Setting breakpoint {} at {}", self.breakpoints.len(), address);
+                        }
+                    } else {
+                        ()
                     }
                 }
             }
@@ -170,4 +198,25 @@ impl Debugger {
             }
         }
     }
+    /// Parses a hexadecimal address string into its corresponding usize value.
+    /// 
+    /// # Arguments
+    /// - `addr`: A hexadecimal address string, which may or may not have a "0x" prefix.
+    /// 
+    /// # Returns
+    /// - `Option<usize>`: If the parsing is successful, returns a Some wrapping the usize value; otherwise, returns None.
+    /// 
+    /// # Description
+    /// This function first removes any "0x" prefix from the address string, then attempts to parse the remaining string as a usize.
+    /// Since the input might be an invalid hexadecimal number, the `ok()` method is used to handle potential errors in the parsing process, returning an Option type to safely manage error cases.
+    fn parse_address(addr: &str) -> Option<usize> {
+        // Remove any "0x" prefix from the address string
+        let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+            &addr[2..]
+        } else {
+            &addr
+        };
+        usize::from_str_radix(addr_without_0x, 16).ok()
+    }
+
 }

@@ -2,12 +2,20 @@ use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::io;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
+use std::mem::size_of;
 
 use crate::dwarf_data::DwarfData;
+
+#[derive(Clone)]
+pub struct Breakpoint {
+    addr: usize,
+    orig_byte: u8,
+}
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -33,12 +41,17 @@ fn child_traceme() -> Result<(), std::io::Error> {
 
 pub struct Inferior {
     child: Child,
+    pub breakpoints: HashMap<usize, Breakpoint>, // Mapping breakpoint addresses to Breakpoint structs
+}
+
+fn align_addr_to_word(addr: usize) -> usize {
+    addr & (-(size_of::<usize>() as isize) as usize)
 }
 
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
+    pub fn new(target: &str, args: &Vec<String>, breakpoints: &Vec<usize>) -> Option<Inferior> {
         // TODO: implement me!
         let mut binding = Command::new(target);
         let child = binding.args(args);
@@ -47,7 +60,12 @@ impl Inferior {
         let child_process = child.spawn().ok()?;
         let pid = Pid::from_raw(child_process.id() as i32);
         waitpid(pid, None).ok()?;
-        Some(Inferior { child: child_process })
+        let mut inferior = Inferior { child: child_process, breakpoints: HashMap::new() };
+        for breakpoint in breakpoints {
+            let orig_byte = inferior.write_byte(*breakpoint, 0xcc).ok().unwrap();
+            inferior.breakpoints.insert(*breakpoint, Breakpoint { addr: *breakpoint, orig_byte });
+        }
+        Some(inferior)
     }
 
     /// Returns the pid of this inferior.
@@ -108,5 +126,59 @@ impl Inferior {
         Ok(())
     }
 
+    fn write_byte(&mut self, addr: usize, val: u8) -> Result<u8, nix::Error> {
+        let aligned_addr = align_addr_to_word(addr);
+        let byte_offset = addr - aligned_addr;
+        let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType)? as u64;
+        let orig_byte = (word >> 8 * byte_offset) & 0xff;
+        let masked_word = word & !(0xff << 8 * byte_offset);
+        let updated_word = masked_word | ((val as u64) << 8 * byte_offset);
+        ptrace::write(
+            self.pid(),
+            aligned_addr as ptrace::AddressType,
+            updated_word as *mut std::ffi::c_void,
+        )?;
+        Ok(orig_byte as u8)
+    }
+
+    pub fn continue_breakpoint(&mut self, breakpoint: &usize) -> Result<(), nix::Error> {
+        ptrace::step(self.pid(), None).ok();
+        let pid = self.pid();
+        match waitpid(pid, None) {
+            Ok(WaitStatus::Stopped(_, nix::sys::signal::Signal::SIGTRAP)) => {
+                // Check if the process stopped correctly
+                println!("Process stopped at the next instruction");
+    
+                // Restore the original instruction byte at the breakpoint location
+                self.write_byte(*breakpoint, 0xcc).expect("Failed to restore the original instruction byte");
+            }
+            Ok(WaitStatus::Exited(_, status)) => {
+                println!("Process exited with status: {}", status);
+                return Ok(());
+            }
+            Ok(WaitStatus::Signaled(_, signal, _)) => {
+                println!("Process was killed by signal: {}", signal);
+                return Ok(());
+            }
+            _ => {
+                println!("Unexpected status");
+                return Err(nix::Error::from(nix::errno::Errno::EINVAL));
+            }
+        }
+        self.cont().expect("Failed to continue");
+        let wait_status = waitpid(self.pid(), None);
+            if let Ok(WaitStatus::Stopped(_, nix::sys::signal::Signal::SIGTRAP)) = wait_status {
+                let rip = ptrace::getregs(self.pid()).unwrap().rip as usize;
+                if rip - 1 == *breakpoint {
+                    let orig_byte = self.breakpoints.get(breakpoint).unwrap().orig_byte;
+                    self.write_byte(*breakpoint, orig_byte).expect("Failed to restore the original instruction byte");
+                    let mut regs = ptrace::getregs(self.pid()).unwrap();
+                    regs.rip = (rip - 1) as u64;
+                    ptrace::setregs(self.pid(), regs).ok();
+                }
+            }
+        Ok(())
+
+    }
 
 }
