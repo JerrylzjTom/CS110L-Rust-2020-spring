@@ -87,19 +87,7 @@ impl Inferior {
         })
     }
 
-    /// Resumes the execution of a traced process.
-    ///
-    /// This function sends a request to continue the execution of a traced child process,
-    /// and then waits for the process to generate a result. It combines the continuation
-    /// and waiting operations into an atomic operation.
-    ///
-    /// # Returns
-    /// - `Result<Status, nix::Error>`: Returns a result type containing either the status information
-    ///   of the child process or an error encountered during the operation.
-    ///
-    /// # Error Handling
-    /// - `ptrace::cont(self.pid(), None)?`: If the continue operation fails, it returns an error.
-    /// - `self.wait(None)`: The wait operation may have different outcomes based on the state of the child process.
+
     pub fn cont(&mut self) -> Result<Status, nix::Error> {
         ptrace::cont(self.pid(), None)?;
         self.wait(None)

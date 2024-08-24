@@ -1,6 +1,5 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::{self, Inferior};
-use addr2line::gimli::CompilationUnitHeadersIter;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use crate::dwarf_data::{DwarfData, Error as DwarfError};
@@ -30,7 +29,7 @@ impl Debugger {
             }
         };
         // println!("{:?}", debug_data);
-        debug_data.print();
+        // debug_data.print();
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -150,7 +149,24 @@ impl Debugger {
                             println!("Setting breakpoint {} at {}", self.breakpoints.len(), address);
                         }
                     } else {
-                        ()
+                        if let Some(line_num) = args.parse::<usize>().ok() {
+                            // Get the address of the line number
+                            let address = self.dwarf_data.get_addr_for_line(None, line_num);
+                            if address.is_some() {
+                                let address = address.unwrap();
+                                self.breakpoints.push(address);
+                                println!("Settingbreakpoint {} at {}", self.breakpoints.len(), address);
+                            }
+                        }else {
+                            let address = self.dwarf_data.get_addr_for_function(None, &args);
+                            if address.is_some() {
+                                let address = address.unwrap();
+                                self.breakpoints.push(address);
+                                println!("Settingbreakpoint {} at {}", self.breakpoints.len(), address);
+                            }else {
+                                println!("Could not find address for {}", args);
+                            }
+                        }
                     }
                 }
             }
