@@ -13,7 +13,6 @@ use crate::dwarf_data::DwarfData;
 
 #[derive(Clone)]
 pub struct Breakpoint {
-    addr: usize,
     orig_byte: u8,
 }
 
@@ -63,7 +62,7 @@ impl Inferior {
         let mut inferior = Inferior { child: child_process, breakpoints: HashMap::new() };
         for breakpoint in breakpoints {
             let orig_byte = inferior.write_byte(*breakpoint, 0xcc).ok().unwrap();
-            inferior.breakpoints.insert(*breakpoint, Breakpoint { addr: *breakpoint, orig_byte });
+            inferior.breakpoints.insert(*breakpoint, Breakpoint { orig_byte });
         }
         Some(inferior)
     }
