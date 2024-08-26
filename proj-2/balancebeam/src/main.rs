@@ -87,31 +87,59 @@ async fn main() {
     let state = Arc::new(RwLock::new(state));
     loop {
         let (stream, _) = listener.accept().await.unwrap();
-        let state = state.clone();
+        let state_clone = state.clone();
         tokio::spawn(async move {
-            handle_connection(stream, &state).await;
+            handle_connection(stream, &state_clone).await;
         });
     }
 }
 
 async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
-    while state.read().await.upstream_addresses.len() > 0 {
-        println!("{:?}", state);
-        let upstream_idx = rng.gen_range(0..state.read().await.upstream_addresses.len());
-        let upstream_ip = &state.read().await.upstream_addresses[upstream_idx];
-        match TcpStream::connect(upstream_ip).await {
-            Ok(stream) => return Ok(stream),
-            Err(err) => {
-                log::warn!("Failed to connect to upstream {}: {}", upstream_ip, err);
-                state.write().await.upstream_addresses.remove(upstream_idx);
-                continue;
+    // while state.read().await.upstream_addresses.len() > 0 {
+    //     println!("{:?}", state);
+    //     let upstream_idx = rng.gen_range(0..state.read().await.upstream_addresses.len());
+    //     let upstream_ip = &state.read().await.upstream_addresses[upstream_idx];
+    //     // match TcpStream::connect(upstream_ip).await {
+    //     //     Ok(stream) => return Ok(stream),
+    //     //     Err(err) => {
+    //     //         log::warn!("Failed to connect to upstream {}: {}", upstream_ip, err);
+    //     //         state.write().await.upstream_addresses.remove(upstream_idx);
+    //     //         continue;
+    //     //     }
+    //     // }
+    // }
+    loop {
+        log::info!("{:?}", state);
+        let upstream_ip;
+        {
+            let state_read = state.read().await;
+            log::info!("{:?}", state_read); // Printing the state for debugging
+
+            if state_read.upstream_addresses.is_empty() {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "No upstream addresses available"));
             }
+
+            let upstream_idx = rng.gen_range(0..state_read.upstream_addresses.len());
+            upstream_ip = state_read.upstream_addresses[upstream_idx].clone();
+        }
+        // let mut state_write = state.write().await;
+        let connection_result = TcpStream::connect(&upstream_ip).await;
+
+        if let Err(err) = connection_result {
+            log::warn!("Failed to connect to upstream {}: {}", upstream_ip, err);
+            // If connection failed, write lock the state and remove the failed upstream IP
+            let mut state_write = state.write().await;
+            state_write.upstream_addresses.retain(|ip| ip != &upstream_ip);
+            log::warn!("Removed failed upstream: {}", upstream_ip);
+            log::info!("{:?}", state_write);
+            // Return the original error
+            continue;
         }
     }
-    log::error!("Failed to connect to any upstream servers");
-    return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to connect to any upstream servers"));
+    // TODO: implement failover (milestone 3)
 }
+
 
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
