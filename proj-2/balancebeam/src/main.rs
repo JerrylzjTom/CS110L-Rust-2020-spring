@@ -8,7 +8,6 @@ use rand::{Rng, SeedableRng};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use std::time::Instant;
-use http::{Request, Response, StatusCode};
 
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
@@ -50,6 +49,12 @@ struct ProxyState {
     max_requests_per_minute: usize,
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
+    /// previous time request 
+    previouse_request: usize,
+    /// Right time request
+    right_time_request: usize,
+    /// Windows start time
+    window_start_time: usize,
 }
 
 #[tokio::main]
@@ -85,6 +90,9 @@ async fn main() {
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
+        previouse_request: 0,
+        right_time_request: 0,
+        window_start_time: Instant::now().elapsed().as_secs() as usize,
     };
     
     let mut start_time = Instant::now(); // Get the start time
@@ -167,7 +175,6 @@ async fn health_check(state: &RwLock<ProxyState>, upstreams: &Vec<String>) {
 
     }
 }
-
 async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
     loop {
@@ -201,7 +208,6 @@ async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, st
     }
 }
 
-
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("{} <- {}", client_ip, response::format_response_line(&response));
@@ -230,7 +236,28 @@ async fn handle_connection(mut client_conn: TcpStream, state: &RwLock<ProxyState
     loop {
         // Read a request from the client
         let mut request = match request::read_from_stream(&mut client_conn).await {
-            Ok(request) => request,
+            Ok(request) => {
+                let is_rate_limit = rate_limit(&state).await;
+                if is_rate_limit {
+                    let response = response::make_http_error(http::StatusCode::TOO_MANY_REQUESTS);
+                    send_response(&mut client_conn, &response).await;
+                    continue;
+                }else { // update the request count
+                    let current_time = Instant::now().elapsed().as_secs() as usize;
+                    let window_start_time;
+                    {
+                        window_start_time = state.read().await.window_start_time;
+                    }
+                    if current_time - window_start_time >= 60 {
+                        if current_time - window_start_time >= 60 {
+                            state.write().await.window_start_time = current_time;
+                            state.write().await.right_time_request = 0;
+                        }
+                    }
+                }
+                    state.write().await.right_time_request += 1;
+                    request
+            },
             // Handle case where client closed connection and is no longer sending requests
             Err(request::Error::IncompleteRequest(0)) => {
                 log::debug!("Client finished sending requests. Shutting down connection");
@@ -290,4 +317,15 @@ async fn handle_connection(mut client_conn: TcpStream, state: &RwLock<ProxyState
         send_response(&mut client_conn, &response).await;
         log::debug!("Forwarded response to client");
     }
+}
+
+async fn rate_limit(state: &RwLock<ProxyState>) -> bool{
+    let state_read = state.read().await;
+    let request_count = state_read.right_time_request;
+    let max_requests = state_read.max_requests_per_minute;
+    if request_count >= max_requests {
+        log::warn!("Rate limit exceeded: {} requests per second", request_count);
+        return true;
+    }
+    false
 }
