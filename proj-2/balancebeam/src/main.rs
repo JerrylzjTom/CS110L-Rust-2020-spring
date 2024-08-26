@@ -110,7 +110,6 @@ async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, st
     //     // }
     // }
     loop {
-        log::info!("{:?}", state);
         let upstream_ip;
         {
             let state_read = state.read().await;
@@ -135,6 +134,8 @@ async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, st
             log::info!("{:?}", state_write);
             // Return the original error
             continue;
+        }else {
+            return connection_result;
         }
     }
     // TODO: implement failover (milestone 3)
