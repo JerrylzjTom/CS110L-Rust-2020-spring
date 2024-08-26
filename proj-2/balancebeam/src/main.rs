@@ -7,6 +7,8 @@ use clap::Parser;
 use rand::{Rng, SeedableRng};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use std::time::Instant;
+use http::{Request, Response, StatusCode};
 
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
@@ -84,13 +86,85 @@ async fn main() {
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
     };
+    
+    let mut start_time = Instant::now(); // Get the start time
+    let active_health_check_interval = state.active_health_check_interval;
+    let upstreams = state.upstream_addresses.clone();
     let state = Arc::new(RwLock::new(state));
     loop {
+        let duration = start_time.elapsed();
+        if duration.as_secs() >= active_health_check_interval as u64 {
+            health_check(&state, &upstreams).await;
+            start_time = Instant::now();
+        }
+
         let (stream, _) = listener.accept().await.unwrap();
         let state_clone = state.clone();
         tokio::spawn(async move {
             handle_connection(stream, &state_clone).await;
         });
+    }
+}
+
+async fn health_check(state: &RwLock<ProxyState>, upstreams: &Vec<String>) {
+    let path;
+    {
+        let state_read = state.read().await;
+        path = state_read.active_health_check_path.clone();
+    }
+
+    for upstream in upstreams.iter() {
+        log::info!("Performing active health check on {}", upstream);
+
+        let request = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(&path)
+        .header("Host", upstream)
+        .body(Vec::new())
+        .unwrap();
+
+        let mut upstream_stream = match TcpStream::connect(upstream).await {
+            Ok(stream) => {stream},
+            Err(err) => {
+                {
+                    let mut state_write = state.write().await;
+                    state_write.upstream_addresses.retain(|addr| addr != upstream);
+                    log::info!("Tcp connect failed, Drop Upstream addresses: {:?}", upstream);
+                }
+                continue;
+            }
+        };
+        if let Err(error) = request::write_to_stream(&request, &mut upstream_stream).await {
+            log::warn!("Failed to write request to upstream: {}", error);
+            continue;
+        }else {
+            log::info!("Successfully connected to upstream: {}", upstream);
+            {
+                if let Ok(response) = response::read_from_stream(&mut upstream_stream, &http::Method::GET).await {
+                    if response.status().is_success() {
+                        log::info!("Upstream {} returned 200 OK", upstream);
+                        let mut state_write = state.write().await;
+                        if !state_write.upstream_addresses.contains(&upstream.to_string()) {
+                            state_write.upstream_addresses.push(upstream.to_string());
+                            log::info!("Restored upstream: {}", upstream);
+                            continue;
+                        }
+                    } else {
+                        log::warn!("Upstream {} returned non-200 status: {}", upstream, response.status());
+                        let mut state_write = state.write().await;
+                        state_write.upstream_addresses.retain(|addr| addr != upstream);
+                        log::info!("Removed upstream {} from active addresses due to non-200 response", upstream);
+                        continue;
+                    }
+                }else {
+                    let mut state_write = state.write().await;
+                    state_write.upstream_addresses.retain(|addr| addr != upstream);
+                    log::info!("Removed upstream {} from active addresses due to can't get response", upstream);
+                    continue;
+                }
+            }
+        }
+
     }
 }
 
