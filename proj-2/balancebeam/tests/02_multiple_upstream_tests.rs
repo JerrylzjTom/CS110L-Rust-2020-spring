@@ -139,7 +139,7 @@ async fn test_passive_health_checks() {
 /// * Send some more requests. Make sure all the requests succeed
 #[tokio::test]
 async fn test_active_health_checks_check_http_status() {
-    let n_upstreams = 2;
+    let n_upstreams = 5;
     let (balancebeam, mut upstreams) = setup_with_params(n_upstreams, Some(1), None).await;
     let failed_ip = upstreams[upstreams.len() - 1].address();
 
