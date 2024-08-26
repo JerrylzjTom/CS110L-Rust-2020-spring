@@ -50,7 +50,7 @@ struct ProxyState {
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
     /// previous time request 
-    previouse_request: usize,
+    /// previouse_request: usize,
     /// Right time request
     right_time_request: usize,
     /// Windows start time
@@ -90,7 +90,7 @@ async fn main() {
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-        previouse_request: 0,
+        // previouse_request: 0,
         right_time_request: 0,
         window_start_time: Instant::now().elapsed().as_secs() as usize,
     };
@@ -137,7 +137,7 @@ async fn health_check(state: &RwLock<ProxyState>, upstreams: &Vec<String>) {
                 {
                     let mut state_write = state.write().await;
                     state_write.upstream_addresses.retain(|addr| addr != upstream);
-                    log::info!("Tcp connect failed, Drop Upstream addresses: {:?}", upstream);
+                    log::info!("Tcp connect failed, Drop Upstream addresses: {:?} for {}", upstream, err);
                 }
                 continue;
             }
@@ -321,6 +321,9 @@ async fn handle_connection(mut client_conn: TcpStream, state: &RwLock<ProxyState
 
 async fn rate_limit(state: &RwLock<ProxyState>) -> bool{
     let state_read = state.read().await;
+    if state_read.max_requests_per_minute == 0 {
+        return false;
+    }
     let request_count = state_read.right_time_request;
     let max_requests = state_read.max_requests_per_minute;
     if request_count >= max_requests {
