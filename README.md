@@ -1,9 +1,9 @@
 # CS110L-2020-Spring
 This is the repository for recording my [CS110L-2020-Spring](https://reberhardt.com/cs110l/spring-2020/) homework.
 ## Course Information
-### Course Name: Safety in Systems Programming
-### Course Number: CS110L
-### Study Period: 2024.8.22-2024.8.26
++ Course Name: Safety in Systems Programming
++ Course Number: CS110L
++ Study Period: 2024.8.22-2024.8.26
 
 ## Environment
 + OS: Ubuntu 22.04
